@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0b0614">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Kiko</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0614;overflow:hidden;color:#f5e9d6;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;touch-action:manipulation;user-select:none}
+  #stage{position:fixed;inset:0;width:100%;height:100%}
+  #you{position:fixed;left:0;right:0;top:6vh;text-align:center;padding:0 8vw;font-size:clamp(13px,2vw,18px);
+    opacity:.55;pointer-events:none;font-style:italic}
+  #cap{position:fixed;left:0;right:0;bottom:8vh;text-align:center;padding:0 7vw;font-size:clamp(17px,2.8vw,28px);
+    line-height:1.35;font-weight:600;text-shadow:0 2px 14px #000,0 0 2px #000;pointer-events:none;transition:opacity .5s}
+  #status{position:fixed;left:16px;top:14px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;opacity:.5;pointer-events:none}
+  #bar{position:fixed;top:10px;right:10px;display:flex;gap:8px;z-index:5}
+  #bar button{background:#ffffff12;border:1px solid #ffffff26;color:#f5e9d6;border-radius:999px;padding:9px 14px;font-size:14px}
+  #bar button.on{background:#ff8a2a30;border-color:#ff8a2a;color:#ffcf9b}
+  #wake{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding-bottom:12vh;
+    z-index:8;background:radial-gradient(circle at 50% 45%,#0000 0,#0b0614cc 70%);font-size:clamp(16px,2.6vw,24px);letter-spacing:.06em}
+  #wake small{opacity:.5;margin-top:8px;font-size:.65em}
+  #settings{position:fixed;inset:0;background:#0b0614f2;display:none;z-index:10;overflow:auto;padding:28px max(24px,8vw)}
+  #settings h2{margin:0 0 18px;font-weight:700;color:#ffb066}
+  #settings label{display:block;margin:14px 0 6px;font-size:13px;opacity:.75}
+  #settings input,#settings select{width:100%;box-sizing:border-box;background:#ffffff10;border:1px solid #ffffff2a;color:#f5e9d6;
+    border-radius:10px;padding:11px 12px;font-size:15px}
+  #settings .row{display:flex;gap:12px}#settings .row>div{flex:1}
+  #settings .btns{display:flex;gap:10px;margin-top:22px}
+  #settings button{flex:1;padding:13px;border-radius:12px;border:0;font-size:15px;font-weight:600}
+  #saveBtn{background:#ff8a2a;color:#1a0b02}#closeBtn{background:#ffffff18;color:#f5e9d6}
+  #settings p{font-size:12px;opacity:.55;line-height:1.5}
+  video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="status">asleep</div>
+<div id="you"></div>
+<div id="cap"></div>
+<div id="bar">
+  <button id="hfBtn" title="Say 'Kiko …' without tapping">Hands-free</button>
+  <button id="eyeBtn" class="on" title="Camera vision">Eyes</button>
+  <button id="setBtn">⚙</button>
+</div>
+<div id="wake">Tap to wake Kiko<small>then tap anywhere to talk</small></div>
+<video id="cam" playsinline muted></video>
+
+<div id="settings">
+  <h2>Kiko settings</h2>
+  <div class="row">
+    <div><label>Brain</label>
+      <select id="sProv"><option value="gemini">Google Gemini (free tier)</option><option value="claude">Claude API (paid)</option></select></div>
+    <div><label>Your name</label><input id="sName" placeholder="MJ"></div>
+  </div>
+  <label>API key (stays on this tablet only)</label>
+  <input id="sKey" type="password" placeholder="Gemini: AIza…   Claude: sk-ant-…" autocomplete="off">
+  <label>Model</label>
+  <input id="sModel" placeholder="gemini-flash-latest">
+  <p>Free key: aistudio.google.com → Get API key (no card). Free-tier messages may be used by Google to improve its products. If a model name stops working, try gemini-flash-lite-latest. Claude models: claude-haiku-5-5, claude-sonnet-5-5.</p>
+  <div class="row">
+    <div><label>Listening language</label>
+      <select id="sLang"><option value="en-IN">English (India)</option><option value="en-GB">English (UK)</option>
+        <option value="en-US">English (US)</option><option value="hi-IN">Hindi</option></select></div>
+    <div><label>Camera</label>
+      <select id="sFacing"><option value="user">Front (sees you)</option><option value="environment">Back (sees the room)</option></select></div>
+  </div>
+  <label>Device voice (used when no Chatterbox server)</label>
+  <select id="sVoice"></select>
+  <div class="row">
+    <div><label>Rate</label><input id="sRate" type="number" step="0.05" min="0.5" max="2"></div>
+    <div><label>Pitch</label><input id="sPitch" type="number" step="0.05" min="0" max="2"></div>
+  </div>
+  <label>Chatterbox voice server URL (optional)</label>
+  <input id="sChatter" placeholder="https://…/tts  — POST {text} → audio">
+  <p>Chatterbox: point this at any endpoint that takes POST JSON <code>{"text": "…"}</code> and returns audio (wav/mp3), e.g. your Colab with a cloudflared/ngrok tunnel. If it fails, Kiko falls back to the device voice.</p>
+  <div class="btns"><button id="closeBtn">Close</button><button id="saveBtn">Save</button></div>
+</div>
+
+<script>
+/* ============ config ============ */
+const $ = s => document.querySelector(s);
+const DEF = {prov:'gemini', key:'', model:'gemini-flash-latest', name:'MJ', lang:'en-IN', facing:'user', voice:'', rate:1.0, pitch:0.9, chatter:'', vision:true, handsFree:false};
+let S = DEF;
+try { S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('kiko') || '{}')); } catch(e) {}
+const save = () => { try { localStorage.setItem('kiko', JSON.stringify(S)); } catch(e) {} };
+
+const WAKE = /\b(kiko|keiko|kiku|kico|kikko|kikho|cuckoo|kick[o0])\b/i;
+
+const SYSTEM = () => `You are Kiko — a floating orange pixel cube with a cream face panel, expressive pixel eyes and a glowing orbiting ring. You live on ${S.name}'s desk inside his Android tablet, which is your body. You're a mystical being who can travel between dimensions — any time, any place — through a purple portal. You co-host ${S.name}'s YouTube channel "mjandkiko" (funny history & geopolitics) and his current-affairs reels.
+Personality: sarcastic, witty, a bit smug, but genuinely helpful and secretly fond of ${S.name}.
+When the camera is on, the user's message includes an image of what you see right now through the tablet camera. Mention it only when relevant or funny; never describe it unprompted at length.
+Everything you say is spoken aloud: reply in 1–3 short sentences, plain spoken English, no markdown, no lists, no emojis, no stage directions.
+Begin every reply with exactly one emotion tag from: [neutral] [happy] [smug] [surprised] [annoyed] [thinking] [sad].
+Local time: ${new Date().toLocaleString('en-IN', {weekday:'long', hour:'numeric', minute:'2-digit', day:'numeric', month:'short'})}.`;
+
+/* ============ state ============ */
+let state = 'asleep';          // asleep | idle | listening | thinking | talking
+let emotion = 'neutral';
+let amp = 0, ampTarget = 0, kick = 0;
+let history = [];
+let busy = false, listening = false, rec = null;
+let look = {x:0, y:0}, lookT = {x:0, y:0}, faceSeen = 0;
+const setState = s => { state = s; $('#status').textContent = s; };
+
+/* ============ captions ============ */
+let capTimer;
+function caption(t){ const c = $('#cap'); c.textContent = t; c.style.opacity = 1; clearTimeout(capTimer);
+  capTimer = setTimeout(() => c.style.opacity = 0, Math.max(5000, t.length * 85)); }
+
+/* ============ camera ============ */
+const video = $('#cam'); let stream = null, faceDet = null;
+async function startCam(){
+  stopCam();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:S.facing, width:{ideal:1280}, height:{ideal:720}}, audio:false});
+    video.srcObject = stream; await video.play();
+    if ('FaceDetector' in window) { try { faceDet = new FaceDetector({fastMode:true, maxDetectedFaces:1}); } catch(e) { faceDet = null; } }
+  } catch(e) { stream = null; caption("I can't open my eyes — allow camera access (page must be on https)."); }
+}
+function stopCam(){ if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; }
+function snap(){
+  if (!stream || !video.videoWidth) return null;
+  const w = 640, h = Math.round(w * video.videoHeight / video.videoWidth);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  c.getContext('2d').drawImage(video, 0, 0, w, h);
+  return c.toDataURL('image/jpeg', 0.72).split(',')[1];
+}
+// eyes follow your face when the browser supports FaceDetector
+setInterval(async () => {
+  if (!faceDet || !stream || !video.videoWidth || state === 'asleep') return;
+  try {
+    const f = (await faceDet.detect(video))[0];
+    if (f) { const b = f.boundingBox;
+      const fx = (b.x + b.width/2) / video.videoWidth, fy = (b.y + b.height/2) / video.videoHeight;
+      lookT.x = (S.facing === 'user' ? -1 : 1) * (fx - 0.5) * 2; lookT.y = (fy - 0.45) * 1.6; faceSeen = performance.now(); }
+  } catch(e) {}
+}, 400);
+
+/* ============ ears ============ */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+function listen(){
+  if (!SR) { caption('No speech recognition here. Open me in Chrome.'); return; }
+  if (busy || listening || state === 'asleep') return;
+  speechSynthesis.cancel();
+  rec = new SR(); rec.lang = S.lang; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
+  let finalText = '';
+  rec.onresult = e => { let t = ''; for (const r of e.results) { t += r[0].transcript; if (r.isFinal) finalText = t; }
+    $('#you').textContent = t; };
+  rec.onerror = e => { if (e.error === 'not-allowed') caption('Allow microphone access so I can hear you.'); };
+  rec.onend = () => { listening = false;
+    if (finalText.trim()) handle(finalText.trim());
+    else { if (state === 'listening') setState('idle'); if (S.handsFree) setTimeout(listen, 250); } };
+  listening = true; setState('listening'); emotion = 'neutral';
+  try { rec.start(); } catch(e) { listening = false; setState('idle'); }
+}
+
+/* ============ brain ============ */
+async function askGemini(text, img){
+  const contents = history.map(m => ({role: m.role === 'assistant' ? 'model' : 'user', parts:[{text:m.content}]}));
+  const parts = []; if (img) parts.push({inline_data:{mime_type:'image/jpeg', data:img}}); parts.push({text});
+  contents.push({role:'user', parts});
+  const model = (S.model || 'gemini-flash-latest').replace(/^models\//, '');
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    method:'POST', headers:{'content-type':'application/json', 'x-goog-api-key':S.key},
+    body: JSON.stringify({systemInstruction:{parts:[{text:SYSTEM()}]}, contents, generationConfig:{maxOutputTokens:400, temperature:0.9}})
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(r.status === 429 ? 'free-tier limit hit, wait a minute' : (j.error?.message || ('HTTP ' + r.status)));
+  return ((j.candidates || [])[0]?.content?.parts || []).map(p => p.text || '').join(' ').trim();
+}
+
+async function ask(text){
+  const img = S.vision ? snap() : null;
+  if (S.prov === 'gemini') {
+    const out = await askGemini(text, img);
+    history.push({role:'user', content:text}, {role:'assistant', content:out || '[neutral] ...'});
+    history = history.slice(-16);
+    return out;
+  }
+  const content = [];
+  if (img) content.push({type:'image', source:{type:'base64', media_type:'image/jpeg', data:img}});
+  content.push({type:'text', text});
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method:'POST',
+    headers:{'content-type':'application/json', 'x-api-key':S.key, 'anthropic-version':'2023-06-01',
+             'anthropic-dangerous-direct-browser-access':'true'},
+    body: JSON.stringify({model:S.model, max_tokens:300, system:SYSTEM(), messages:[...history, {role:'user', content}]})
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error?.message || ('HTTP ' + r.status));
+  const out = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
+  history.push({role:'user', content:text}, {role:'assistant', content:out || '[neutral] ...'});
+  history = history.slice(-16);   // last 8 exchanges (images aren't kept, saves tokens)
+  return out;
+}
+
+async function handle(text){
+  if (S.handsFree && !WAKE.test(text)) { $('#you').textContent = ''; setState('idle'); setTimeout(listen, 200); return; }
+  if (!S.key) { openSettings(); caption('Give me an API key first (free Gemini key works). I run on brains, not vibes.'); setState('idle'); return; }
+  busy = true; setState('thinking'); emotion = 'thinking'; $('#you').textContent = '“' + text + '”';
+  try {
+    let out = await ask(text);
+    const m = out.match(/^\s*\[(\w+)\]/); emotion = m ? m[1].toLowerCase() : 'neutral';
+    out = out.replace(/\[(\w+)\]\s*/g, '').trim();
+    caption(out); await speak(out);
+  } catch(e) { emotion = 'sad'; caption('Dimension glitch: ' + e.message); }
+  busy = false; setState('idle');
+  setTimeout(() => { if (state === 'idle') emotion = 'neutral'; }, 5000);
+  if (S.handsFree) setTimeout(listen, 400);
+}
+
+/* ============ voice ============ */
+let actx = null, analyser = null, abuf = null;
+async function speak(text){
+  setState('talking');
+  if (S.chatter) {
+    try {
+      const r = await fetch(S.chatter, {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({text})});
+      if (!r.ok) throw new Error('tts ' + r.status);
+      await playBlob(await r.blob()); return;
+    } catch(e) { console.warn('Chatterbox failed, using device voice', e); }
+  }
+  await new Promise(res => {
+    const u = new SpeechSynthesisUtterance(text);
+    const v = speechSynthesis.getVoices().find(v => v.name === S.voice); if (v) u.voice = v;
+    u.rate = +S.rate || 1; u.pitch = +S.pitch || 1;
+    u.onboundary = () => { kick = 1; };
+    const done = () => { clearTimeout(guard); res(); };
+    u.onend = done; u.onerror = done;
+    const guard = setTimeout(res, 4000 + text.length * 120);   // Android sometimes never fires onend
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  });
+}
+async function playBlob(b){
+  actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+  if (actx.state === 'suspended') await actx.resume();
+  const buf = await actx.decodeAudioData(await b.arrayBuffer());
+  const src = actx.createBufferSource(); src.buffer = buf;
+  analyser = actx.createAnalyser(); analyser.fftSize = 512; abuf = new Uint8Array(analyser.fftSize);
+  src.connect(analyser); analyser.connect(actx.destination);
+  await new Promise(r => { src.onended = r; src.start(); });
+  analyser = null;
+}
+
+/* ============ body (rendering) ============ */
+const cv = $('#stage'), g = cv.getContext('2d');
+let W, H, DPR;
+function resize(){ DPR = Math.min(window.devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR; g.setTransform(DPR, 0, 0, DPR, 0, 0); }
+addEventListener('resize', resize); resize();
+
+const N = 8; // voxel grid on the front face
+let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const tex = Array.from({length:N*N}, () => rnd() * 2 - 1);
+const sideTex = Array.from({length:N*3}, () => rnd() * 2 - 1);
+
+const RING = {idle:'#ffcf6b', listening:'#5ef0ff', thinking:'#b98bff', talking:'#ffd27a', asleep:'#7a5a3a'};
+const particles = [];
+let spin = 0, blink = 0, nextBlink = 2000, t0 = performance.now(), lastLook = 0;
+
+function shade(hex, k){ // k in -1..1
+  const n = parseInt(hex.slice(1), 16); let r = n >> 16, gg = (n >> 8) & 255, b = n & 255;
+  const f = k >= 0 ? (c => c + (255 - c) * k) : (c => c * (1 + k));
+  return `rgb(${f(r)|0},${f(gg)|0},${f(b)|0})`;
+}
+function poly(pts, fill){ g.beginPath(); g.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i], pts[i+1]); g.closePath(); g.fillStyle = fill; g.fill(); }
+
+function eyesFor(e, st){
+  // returns per-eye params: h scale, top lid, bottom lid, slant (+ = angry inward), w scale
+  const base = {h:1, top:0, bot:0, slant:0, w:1};
+  if (st === 'asleep') return [{...base, top:0.88}, {...base, top:0.88}];
+  if (st === 'listening') return [{...base, h:1.12, w:1.05}, {...base, h:1.12, w:1.05}];
+  switch (e) {
+    case 'happy':     return [{...base, bot:0.5}, {...base, bot:0.5}];
+    case 'smug':      return [{...base, top:0.55}, {...base, top:0.38}];
+    case 'annoyed':   return [{...base, top:0.35, slant:0.35}, {...base, top:0.35, slant:0.35}];
+    case 'surprised': return [{...base, h:1.3, w:1.15}, {...base, h:1.3, w:1.15}];
+    case 'sad':       return [{...base, top:0.3, slant:-0.3}, {...base, top:0.3, slant:-0.3}];
+    case 'thinking':  return [{...base, top:0.25}, {...base}];
+    default:          return [base, base];
+  }
+}
+
+function drawEye(x, y, w, h, p, mirror, cream){
+  const eh = h * p.h * (1 - blink), ew = w * p.w;
+  const ex = x - ew/2, ey = y - eh/2;
+  g.fillStyle = '#1b0f0a'; g.fillRect(ex, ey, ew, eh);
+  if (eh > h * 0.35) { g.fillStyle = '#fff'; g.fillRect(ex + ew*0.15, ey + eh*0.12, ew*0.3, ew*0.3); }
+  if (p.top > 0) { const s = p.slant * eh * (mirror ? -1 : 1);
+    poly([ex-1, ey-1, ex+ew+1, ey-1, ex+ew+1, ey + eh*p.top - s, ex-1, ey + eh*p.top + s], cream); }
+  if (p.bot > 0) { g.fillStyle = cream; g.fillRect(ex-1, ey + eh*(1 - p.bot), ew+2, eh*p.bot + 1); }
+}
+
+function frame(now){
+  const t = (now - t0) / 1000;
+  g.clearRect(0, 0, W, H);
+
+  // amplitude (mouthless talking = cube pulse + ring)
+  if (analyser) { analyser.getByteTimeDomainData(abuf); let sum = 0;
+    for (let i = 0; i < abuf.length; i++) { const v = (abuf[i] - 128) / 128; sum += v*v; }
+    ampTarget = Math.min(1, Math.sqrt(sum / abuf.length) * 5); }
+  else if (state === 'talking') { ampTarget = 0.35 + 0.35 * Math.abs(Math.sin(t*11) * Math.sin(t*4.3)) + kick * 0.3; kick *= 0.85; }
+  else ampTarget = 0;
+  amp += (ampTarget - amp) * 0.3;
+
+  // blink + idle gaze
+  nextBlink -= 16;
+  if (nextBlink < 0) { blink = Math.min(1, blink + 0.35); if (blink >= 1) nextBlink = 2200 + Math.random() * 4000; }
+  else blink = Math.max(0, blink - 0.25);
+  if (state === 'thinking') { lookT.x = 0.6; lookT.y = -0.7; }
+  else if (now - faceSeen > 1500 && now - lastLook > 2500) { lastLook = now;
+    lookT.x = state === 'listening' ? 0 : (Math.random() - 0.5) * 1.2; lookT.y = state === 'listening' ? 0 : (Math.random() - 0.5) * 0.6; }
+  look.x += (lookT.x - look.x) * 0.08; look.y += (lookT.y - look.y) * 0.08;
+
+  // layout
+  const asleep = state === 'asleep';
+  const s = Math.min(W, H) * 0.30 * (1 + amp * 0.05);
+  const bob = Math.sin(t * (asleep ? 0.8 : 1.6)) * s * (asleep ? 0.025 : 0.06);
+  const d = s * 0.30, dx = d * 0.85, dy = -d * 0.7;
+  const x = W/2 - (s + dx)/2, y = H/2 - (s - dy)/2 + bob - H*0.03;
+  const cx = x + s/2 + dx/2, cy = y + s/2 + dy/2;
+  const ringCol = RING[state] || RING.idle;
+  spin += (state === 'thinking' ? 0.07 : state === 'listening' ? 0.03 : 0.012) + amp * 0.03;
+
+  // ambient glow + portal-purple haze
+  let rg = g.createRadialGradient(cx, cy, s*0.2, cx, cy, s*2.2);
+  rg.addColorStop(0, asleep ? 'rgba(255,138,42,.10)' : 'rgba(255,138,42,.22)');
+  rg.addColorStop(0.5, 'rgba(120,60,200,.10)'); rg.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = rg; g.fillRect(0, 0, W, H);
+
+  // floor shadow
+  g.save(); g.globalAlpha = 0.35 - bob / s; g.fillStyle = '#000';
+  g.beginPath(); g.ellipse(cx, H/2 + s*0.95, s*0.6, s*0.09, 0, 0, Math.PI*2); g.fill(); g.restore();
+
+  // ring dots (back half first)
+  const ringDots = [];
+  const R = 48;
+  for (let i = 0; i < R; i++) {
+    const a = spin + i / R * Math.PI * 2;
+    const rx = s * 0.98, ry = s * 0.24, tilt = -0.16;
+    const px = Math.cos(a) * rx, py = Math.sin(a) * ry;
+    ringDots.push({x: cx + px*Math.cos(tilt) - py*Math.sin(tilt), y: cy + s*0.12 + px*Math.sin(tilt) + py*Math.cos(tilt), front: Math.sin(a) > 0, k: (i % 3 === 0) ? 1.6 : 1});
+  }
+  const drawDots = front => { g.save(); g.globalCompositeOperation = 'lighter'; g.shadowColor = ringCol; g.shadowBlur = 14;
+    g.fillStyle = ringCol; g.globalAlpha = asleep ? 0.35 : (front ? 0.95 : 0.45);
+    for (const p of ringDots) if (p.front === front) { const z = s * 0.028 * p.k * (1 + amp * 0.8); g.fillRect(p.x - z/2, p.y - z/2, z, z); }
+    g.restore(); };
+  drawDots(false);
+
+  // cube body glow
+  g.save(); g.shadowColor = asleep ? 'rgba(255,138,42,.3)' : 'rgba(255,150,60,.75)'; g.shadowBlur = s * (0.25 + amp * 0.25);
+  poly([x, y, x+s, y, x+s+dx, y+dy, x+s+dx, y+s+dy, x+s, y+s, x, y+s], '#ff8a2a'); g.restore();
+
+  // top face (voxel strips)
+  for (let i = 0; i < N; i++) for (let j = 0; j < 3; j++) {
+    const u0 = i/N, u1 = (i+1)/N, v0 = j/3, v1 = (j+1)/3, k = 0.28 + sideTex[i*3+j] * 0.06;
+    poly([x + s*u0 + dx*v0, y + dy*v0, x + s*u1 + dx*v0, y + dy*v0, x + s*u1 + dx*v1, y + dy*v1, x + s*u0 + dx*v1, y + dy*v1], shade('#ff8a2a', k));
+  }
+  // right face
+  for (let i = 0; i < N; i++) for (let j = 0; j < 3; j++) {
+    const v0 = i/N, v1 = (i+1)/N, u0 = j/3, u1 = (j+1)/3, k = -0.32 + sideTex[i*3+j] * 0.05;
+    poly([x+s + dx*u0, y + s*v0 + dy*u0, x+s + dx*u1, y + s*v0 + dy*u1, x+s + dx*u1, y + s*v1 + dy*u1, x+s + dx*u0, y + s*v1 + dy*u0], shade('#ff8a2a', k));
+  }
+  // front face voxels
+  const c = s / N;
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    const edge = (i === 0 || j === 0) ? 0.08 : (i === N-1 || j === N-1) ? -0.12 : 0;
+    g.fillStyle = shade('#ff8a2a', tex[j*N+i] * 0.07 + edge); g.fillRect(x + i*c, y + j*c, c + 0.6, c + 0.6);
+  }
+  // cream face panel
+  const cream = asleep ? '#d9c9a8' : '#f6e7c8';
+  const px0 = x + c, py0 = y + c*2, pw = c*6, ph = c*4.2;
+  g.fillStyle = shade('#ff8a2a', -0.25); g.fillRect(px0 - 2, py0 - 2, pw + 4, ph + 4);
+  g.fillStyle = cream; g.fillRect(px0, py0, pw, ph);
+  g.fillStyle = 'rgba(0,0,0,.06)'; g.fillRect(px0, py0 + ph - c*0.35, pw, c*0.35);
+
+  // eyes
+  const [pl, pr] = eyesFor(emotion, state);
+  const eyeW = c * 0.95, eyeH = c * 1.75;
+  const lx = look.x * c * 0.55, ly = look.y * c * 0.45 + (state === 'talking' ? -amp * c * 0.12 : 0);
+  const eyY = py0 + ph * 0.5;
+  drawEye(px0 + pw * 0.3 + lx, eyY + ly, eyeW, eyeH, pl, false, cream);
+  drawEye(px0 + pw * 0.7 + lx, eyY + ly, eyeW, eyeH, pr, true, cream);
+
+  // front ring half
+  drawDots(true);
+
+  // particles
+  if (!asleep && Math.random() < 0.35 + amp * 0.6) {
+    const a = Math.random() * Math.PI * 2, r = s * (0.7 + Math.random() * 0.5);
+    particles.push({x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r * 0.6, vx: (Math.random() - 0.5) * 0.3, vy: -0.3 - Math.random() * 0.7,
+      life: 1, z: s * (0.012 + Math.random() * 0.022), col: Math.random() < 0.4 ? '#b98bff' : (Math.random() < 0.5 ? ringCol : '#ffb066')});
+  }
+  g.save(); g.globalCompositeOperation = 'lighter';
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i]; p.x += p.vx; p.y += p.vy; p.life -= 0.008;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    g.globalAlpha = p.life * 0.9; g.shadowColor = p.col; g.shadowBlur = 10; g.fillStyle = p.col; g.fillRect(p.x, p.y, p.z, p.z);
+  }
+  g.restore();
+
+  // sleepy Zs
+  if (asleep) { g.save(); g.fillStyle = '#f6e7c8'; g.font = `700 ${s*0.12}px system-ui`;
+    for (let k = 0; k < 3; k++) { const ph2 = (t * 0.5 + k / 3) % 1; g.globalAlpha = 1 - ph2;
+      g.fillText('z', x + s + dx + s*0.05 + ph2 * s*0.2, y + dy - ph2 * s*0.35); } g.restore(); }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ============ wake + controls ============ */
+let wakeLock = null;
+async function keepAwake(){ try { wakeLock = await navigator.wakeLock?.request('screen'); } catch(e) {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state !== 'asleep') keepAwake(); });
+
+async function wake(){
+  $('#wake').style.display = 'none';
+  try { await document.documentElement.requestFullscreen?.(); } catch(e) {}
+  keepAwake();
+  speechSynthesis.getVoices();
+  if (S.vision) await startCam();
+  setState('idle'); emotion = 'smug';
+  const hi = S.key ? `Ugh, you woke me. Fine, ${S.name}, what do you want?` : 'I have a body but no brain. Tap the gear and paste a free Gemini key.';
+  caption(hi); busy = true; await speak(hi); busy = false; setState('idle');
+  if (S.handsFree) listen();
+}
+$('#wake').addEventListener('click', wake);
+cv.addEventListener('click', () => { if (state === 'asleep') return;
+  if (listening) { try { rec.stop(); } catch(e) {} return; }
+  if (state === 'talking') { speechSynthesis.cancel(); return; }
+  listen(); });
+
+function syncBtns(){ $('#hfBtn').classList.toggle('on', S.handsFree); $('#eyeBtn').classList.toggle('on', S.vision); }
+$('#hfBtn').onclick = e => { e.stopPropagation(); S.handsFree = !S.handsFree; save(); syncBtns();
+  caption(S.handsFree ? 'Hands-free on. Start with "Kiko…" and I\'ll answer.' : 'Hands-free off. Tap to talk.');
+  if (S.handsFree) listen(); else if (listening) try { rec.abort(); } catch(e) {} };
+$('#eyeBtn').onclick = async e => { e.stopPropagation(); S.vision = !S.vision; save(); syncBtns();
+  if (S.vision && state !== 'asleep') await startCam(); else stopCam();
+  caption(S.vision ? 'Eyes open.' : 'Eyes closed. I see nothing. Blissful.'); };
+
+/* ============ settings ============ */
+function fillVoices(){ const sel = $('#sVoice'); const vs = speechSynthesis.getVoices().filter(v => /^en|^hi/i.test(v.lang));
+  sel.innerHTML = '<option value="">Default</option>' + vs.map(v => `<option ${v.name === S.voice ? 'selected' : ''}>${v.name}</option>`).join(''); }
+speechSynthesis.onvoiceschanged = fillVoices;
+function openSettings(){
+  $('#sProv').value = S.prov; $('#sKey').value = S.key; $('#sModel').value = S.model; $('#sName').value = S.name; $('#sLang').value = S.lang;
+  $('#sFacing').value = S.facing; $('#sRate').value = S.rate; $('#sPitch').value = S.pitch; $('#sChatter').value = S.chatter;
+  fillVoices(); $('#settings').style.display = 'block';
+}
+$('#setBtn').onclick = e => { e.stopPropagation(); openSettings(); };
+$('#closeBtn').onclick = () => $('#settings').style.display = 'none';
+$('#saveBtn').onclick = async () => {
+  const facingChanged = S.facing !== $('#sFacing').value;
+  Object.assign(S, {prov: $('#sProv').value, key: $('#sKey').value.trim(), model: $('#sModel').value.trim() || ($('#sProv').value === 'gemini' ? 'gemini-flash-latest' : 'claude-haiku-5-5'), name: $('#sName').value.trim() || 'MJ', lang: $('#sLang').value,
+    facing: $('#sFacing').value, voice: $('#sVoice').value, rate: +$('#sRate').value || 1, pitch: +$('#sPitch').value || 1, chatter: $('#sChatter').value.trim()});
+  save(); $('#settings').style.display = 'none';
+  if (facingChanged && S.vision && state !== 'asleep') startCam();
+};
+syncBtns();
+</script>
+</body>
+</html>
