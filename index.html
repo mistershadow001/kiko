@@ -57,8 +57,8 @@
   <label>API key (stays on this tablet only)</label>
   <input id="sKey" type="password" placeholder="Gemini: AIza…   Claude: sk-ant-…" autocomplete="off">
   <label>Model</label>
-  <input id="sModel" placeholder="gemini-flash-latest">
-  <p>Free key: aistudio.google.com → Get API key (no card). Free-tier messages may be used by Google to improve its products. If a model name stops working, try gemini-flash-lite-latest. Claude models: claude-haiku-5-5, claude-sonnet-5-5.</p>
+  <input id="sModel" placeholder="gemini-flash-lite-latest">
+  <p>Free key: aistudio.google.com → Get API key (no card). Free-tier messages may be used by Google to improve its products. Fastest: gemini-flash-lite-latest. Smarter but slower: gemini-flash-latest. Claude models: claude-haiku-5-5, claude-sonnet-5-5.</p>
   <div class="row">
     <div><label>Listening language</label>
       <select id="sLang"><option value="en-IN">English (India)</option><option value="en-GB">English (UK)</option>
@@ -81,10 +81,13 @@
 <script>
 /* ============ config ============ */
 const $ = s => document.querySelector(s);
-const DEF = {prov:'gemini', key:'', model:'gemini-flash-latest', name:'MJ', lang:'en-IN', facing:'user', voice:'', rate:1.0, pitch:0.9, chatter:'', vision:true, handsFree:false};
+const DEF = {prov:'gemini', key:'', model:'gemini-flash-lite-latest', name:'MJ', lang:'en-IN', facing:'user', voice:'', rate:1.0, pitch:0.9, chatter:'', vision:true, handsFree:false};
 let S = DEF;
 try { S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('kiko') || '{}')); } catch(e) {}
 const save = () => { try { localStorage.setItem('kiko', JSON.stringify(S)); } catch(e) {} };
+if (!S.fast1) { if (S.model === 'gemini-flash-latest') S.model = 'gemini-flash-lite-latest'; S.fast1 = 1; save(); }
+const VISUAL = /\b(see|seeing|look|looking|watch|this|that|these|those|here|holding|hold|wearing|show|camera|read|colou?r|behind|front|room|face|eyes?|desk|screen)\b/i;
+let thinkMode = 0; // 0: thinkingBudget 0, 1: thinkingLevel minimal, 2: none
 
 const WAKE = /\b(kiko|keiko|kiku|kico|kikko|kikho|cuckoo|kick[o0])\b/i;
 
@@ -162,17 +165,25 @@ async function askGemini(text, img){
   const parts = []; if (img) parts.push({inline_data:{mime_type:'image/jpeg', data:img}}); parts.push({text});
   contents.push({role:'user', parts});
   const model = (S.model || 'gemini-flash-latest').replace(/^models\//, '');
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-    method:'POST', headers:{'content-type':'application/json', 'x-goog-api-key':S.key},
-    body: JSON.stringify({systemInstruction:{parts:[{text:SYSTEM()}]}, contents, generationConfig:{maxOutputTokens:400, temperature:0.9}})
-  });
-  const j = await r.json().catch(() => ({}));
+  let r, j;
+  for (;;) {
+    const gc = {maxOutputTokens:220, temperature:0.9};
+    if (thinkMode === 0) gc.thinkingConfig = {thinkingBudget:0};
+    else if (thinkMode === 1) gc.thinkingConfig = {thinkingLevel:'minimal'};
+    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method:'POST', headers:{'content-type':'application/json', 'x-goog-api-key':S.key},
+      body: JSON.stringify({systemInstruction:{parts:[{text:SYSTEM()}]}, contents, generationConfig:gc})
+    });
+    j = await r.json().catch(() => ({}));
+    if (r.status === 400 && thinkMode < 2 && /think/i.test(j.error?.message || '')) { thinkMode++; continue; }
+    break;
+  }
   if (!r.ok) throw new Error(r.status === 429 ? 'free-tier limit hit, wait a minute' : (j.error?.message || ('HTTP ' + r.status)));
   return ((j.candidates || [])[0]?.content?.parts || []).map(p => p.text || '').join(' ').trim();
 }
 
 async function ask(text){
-  const img = S.vision ? snap() : null;
+  const img = S.vision && VISUAL.test(text) ? snap() : null;
   if (S.prov === 'gemini') {
     const out = await askGemini(text, img);
     history.push({role:'user', content:text}, {role:'assistant', content:out || '[neutral] ...'});
@@ -200,8 +211,10 @@ async function handle(text){
   if (S.handsFree && !WAKE.test(text)) { $('#you').textContent = ''; setState('idle'); setTimeout(listen, 200); return; }
   if (!S.key) { openSettings(); caption('Give me an API key first (free Gemini key works). I run on brains, not vibes.'); setState('idle'); return; }
   busy = true; setState('thinking'); emotion = 'thinking'; $('#you').textContent = '“' + text + '”';
+  const t0q = performance.now();
   try {
     let out = await ask(text);
+    $('#status').textContent = 'reply ' + ((performance.now() - t0q) / 1000).toFixed(1) + 's';
     const m = out.match(/^\s*\[(\w+)\]/); emotion = m ? m[1].toLowerCase() : 'neutral';
     out = out.replace(/\[(\w+)\]\s*/g, '').trim();
     caption(out); await speak(out);
@@ -453,7 +466,7 @@ $('#setBtn').onclick = e => { e.stopPropagation(); openSettings(); };
 $('#closeBtn').onclick = () => $('#settings').style.display = 'none';
 $('#saveBtn').onclick = async () => {
   const facingChanged = S.facing !== $('#sFacing').value;
-  Object.assign(S, {prov: $('#sProv').value, key: $('#sKey').value.trim(), model: $('#sModel').value.trim() || ($('#sProv').value === 'gemini' ? 'gemini-flash-latest' : 'claude-haiku-5-5'), name: $('#sName').value.trim() || 'MJ', lang: $('#sLang').value,
+  Object.assign(S, {prov: $('#sProv').value, key: $('#sKey').value.trim(), model: $('#sModel').value.trim() || ($('#sProv').value === 'gemini' ? 'gemini-flash-lite-latest' : 'claude-haiku-5-5'), name: $('#sName').value.trim() || 'MJ', lang: $('#sLang').value,
     facing: $('#sFacing').value, voice: $('#sVoice').value, rate: +$('#sRate').value || 1, pitch: +$('#sPitch').value || 1, chatter: $('#sChatter').value.trim()});
   save(); $('#settings').style.display = 'none';
   if (facingChanged && S.vision && state !== 'asleep') startCam();
