@@ -49,16 +49,25 @@
 
 <div id="settings">
   <h2>Kiko settings</h2>
+  <label>Your name</label><input id="sName" placeholder="MJ">
+  <p>Kiko asks the fastest brain first and falls back automatically if one is slow, down or out of free quota. Fill whichever keys you have; keys stay on this tablet only.</p>
   <div class="row">
-    <div><label>Brain</label>
-      <select id="sProv"><option value="gemini">Google Gemini (free tier)</option><option value="claude">Claude API (paid)</option></select></div>
-    <div><label>Your name</label><input id="sName" placeholder="MJ"></div>
+    <div><label>Groq key — fastest (free)</label><input id="sQKey" type="password" placeholder="gsk_…" autocomplete="off"></div>
+    <div><label>Groq model</label><input id="sQModel" placeholder="llama-3.3-70b-versatile"></div>
   </div>
-  <label>API key (stays on this tablet only)</label>
-  <input id="sKey" type="password" placeholder="Gemini: AIza…   Claude: sk-ant-…" autocomplete="off">
-  <label>Model</label>
-  <input id="sModel" placeholder="gemini-flash-lite-latest">
-  <p>Free key: aistudio.google.com → Get API key (no card). Free-tier messages may be used by Google to improve its products. Fastest: gemini-flash-lite-latest. Smarter but slower: gemini-flash-latest. Claude models: claude-haiku-5-5, claude-sonnet-5-5.</p>
+  <div class="row">
+    <div><label>Gemini key — can see (free)</label><input id="sGKey" type="password" placeholder="AIza…" autocomplete="off"></div>
+    <div><label>Gemini model</label><input id="sGModel" placeholder="gemini-flash-lite-latest"></div>
+  </div>
+  <div class="row">
+    <div><label>OpenRouter key — backup (free)</label><input id="sOKey" type="password" placeholder="sk-or-…" autocomplete="off"></div>
+    <div><label>OpenRouter model</label><input id="sOModel" placeholder="openrouter/free"></div>
+  </div>
+  <div class="row">
+    <div><label>Claude key — optional (paid)</label><input id="sCKey" type="password" placeholder="sk-ant-…" autocomplete="off"></div>
+    <div><label>Claude model</label><input id="sCModel" placeholder="claude-haiku-5-5"></div>
+  </div>
+  <p>Free keys: console.groq.com · aistudio.google.com/apikey · openrouter.ai/keys. Free tiers may use your messages to improve their models. Normal questions: Groq → Gemini → OpenRouter → Claude. Questions about what Kiko sees: Gemini → OpenRouter → Claude (Groq can't see). The brain that answered shows top-left.</p>
   <div class="row">
     <div><label>Listening language</label>
       <select id="sLang"><option value="en-IN">English (India)</option><option value="en-GB">English (UK)</option>
@@ -81,11 +90,14 @@
 <script>
 /* ============ config ============ */
 const $ = s => document.querySelector(s);
-const DEF = {prov:'gemini', key:'', model:'gemini-flash-lite-latest', name:'MJ', lang:'en-IN', facing:'user', voice:'', rate:1.0, pitch:0.9, chatter:'', vision:true, handsFree:false};
+const DEF = {gkey:'', gmodel:'gemini-flash-lite-latest', qkey:'', qmodel:'llama-3.3-70b-versatile', okey:'', omodel:'openrouter/free',
+  ckey:'', cmodel:'claude-haiku-5-5', name:'MJ', lang:'en-IN', facing:'user', voice:'', rate:1.0, pitch:0.9, chatter:'', vision:true, handsFree:false};
 let S = DEF;
 try { S = Object.assign({}, DEF, JSON.parse(localStorage.getItem('kiko') || '{}')); } catch(e) {}
 const save = () => { try { localStorage.setItem('kiko', JSON.stringify(S)); } catch(e) {} };
-if (!S.fast1) { if (S.model === 'gemini-flash-latest') S.model = 'gemini-flash-lite-latest'; S.fast1 = 1; save(); }
+if (!S.mig2) { if (S.key) { if (S.prov === 'claude') { S.ckey = S.key; S.cmodel = S.model || DEF.cmodel; }
+    else { S.gkey = S.key; S.gmodel = (S.model && S.model !== 'gemini-flash-latest') ? S.model : DEF.gmodel; } }
+  delete S.key; delete S.prov; delete S.model; S.mig2 = 1; save(); }
 const VISUAL = /\b(see|seeing|look|looking|watch|this|that|these|those|here|holding|hold|wearing|show|camera|read|colou?r|behind|front|room|face|eyes?|desk|screen)\b/i;
 let thinkMode = 0; // 0: thinkingBudget 0, 1: thinkingLevel minimal, 2: none
 
@@ -160,61 +172,99 @@ function listen(){
 }
 
 /* ============ brain ============ */
+const hasBrain = () => !!(S.gkey || S.qkey || S.okey || S.ckey);
+let lastBrain = '';
+async function post(url, headers, body, ms){
+  const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms || 8000);
+  try {
+    const r = await fetch(url, {method:'POST', headers:Object.assign({'content-type':'application/json'}, headers), body:JSON.stringify(body), signal:ac.signal});
+    const j = await r.json().catch(() => ({}));
+    return {r, j};
+  } catch(e) { throw new Error(e.name === 'AbortError' ? 'timed out' : 'network error'); }
+  finally { clearTimeout(t); }
+}
+const errMsg = (r, j) => r.status === 429 ? 'rate limited' : ((j.error && (j.error.message || j.error)) || ('HTTP ' + r.status));
+
 async function askGemini(text, img){
   const contents = history.map(m => ({role: m.role === 'assistant' ? 'model' : 'user', parts:[{text:m.content}]}));
   const parts = []; if (img) parts.push({inline_data:{mime_type:'image/jpeg', data:img}}); parts.push({text});
   contents.push({role:'user', parts});
-  const model = (S.model || 'gemini-flash-latest').replace(/^models\//, '');
+  const model = (S.gmodel || DEF.gmodel).replace(/^models\//, '');
   let r, j;
   for (;;) {
     const gc = {maxOutputTokens:220, temperature:0.9};
     if (thinkMode === 0) gc.thinkingConfig = {thinkingBudget:0};
     else if (thinkMode === 1) gc.thinkingConfig = {thinkingLevel:'minimal'};
-    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method:'POST', headers:{'content-type':'application/json', 'x-goog-api-key':S.key},
-      body: JSON.stringify({systemInstruction:{parts:[{text:SYSTEM()}]}, contents, generationConfig:gc})
-    });
-    j = await r.json().catch(() => ({}));
-    if (r.status === 400 && thinkMode < 2 && /think/i.test(j.error?.message || '')) { thinkMode++; continue; }
+    ({r, j} = await post(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      {'x-goog-api-key':S.gkey}, {systemInstruction:{parts:[{text:SYSTEM()}]}, contents, generationConfig:gc}));
+    if (r.status === 400 && thinkMode < 2 && /think/i.test((j.error && j.error.message) || '')) { thinkMode++; continue; }
     break;
   }
-  if (!r.ok) throw new Error(r.status === 429 ? 'free-tier limit hit, wait a minute' : (j.error?.message || ('HTTP ' + r.status)));
-  return ((j.candidates || [])[0]?.content?.parts || []).map(p => p.text || '').join(' ').trim();
+  if (!r.ok) throw new Error(errMsg(r, j));
+  return (((j.candidates || [])[0] || {}).content?.parts || []).map(p => p.text || '').join(' ').trim();
 }
 
-async function ask(text){
-  const img = S.vision && VISUAL.test(text) ? snap() : null;
-  if (S.prov === 'gemini') {
-    const out = await askGemini(text, img);
-    history.push({role:'user', content:text}, {role:'assistant', content:out || '[neutral] ...'});
-    history = history.slice(-16);
-    return out;
-  }
+// OpenAI-style APIs (Groq, OpenRouter)
+async function askOA(url, key, model, text, img, extra){
+  const messages = [{role:'system', content:SYSTEM()}, ...history.map(m => ({role:m.role, content:m.content}))];
+  messages.push({role:'user', content: img ? [{type:'text', text}, {type:'image_url', image_url:{url:'data:image/jpeg;base64,' + img}}] : text});
+  const {r, j} = await post(url, Object.assign({authorization:'Bearer ' + key}, extra || {}), {model, messages, max_tokens:220, temperature:0.9});
+  if (!r.ok) throw new Error(errMsg(r, j));
+  return (((j.choices || [])[0] || {}).message?.content || '').trim();
+}
+
+async function askClaude(text, img){
   const content = [];
   if (img) content.push({type:'image', source:{type:'base64', media_type:'image/jpeg', data:img}});
   content.push({type:'text', text});
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method:'POST',
-    headers:{'content-type':'application/json', 'x-api-key':S.key, 'anthropic-version':'2023-06-01',
-             'anthropic-dangerous-direct-browser-access':'true'},
-    body: JSON.stringify({model:S.model, max_tokens:300, system:SYSTEM(), messages:[...history, {role:'user', content}]})
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error?.message || ('HTTP ' + r.status));
-  const out = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
-  history.push({role:'user', content:text}, {role:'assistant', content:out || '[neutral] ...'});
-  history = history.slice(-16);   // last 8 exchanges (images aren't kept, saves tokens)
-  return out;
+  const {r, j} = await post('https://api.anthropic.com/v1/messages',
+    {'x-api-key':S.ckey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true'},
+    {model:S.cmodel || DEF.cmodel, max_tokens:300, system:SYSTEM(), messages:[...history, {role:'user', content}]}, 12000);
+  if (!r.ok) throw new Error(errMsg(r, j));
+  return (j.content || []).filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
+}
+
+const BRAINS = {
+  groq:       {name:'Groq',       vision:false, ok:() => S.qkey, run:(t) => askOA('https://api.groq.com/openai/v1/chat/completions', S.qkey, S.qmodel || DEF.qmodel, t, null)},
+  gemini:     {name:'Gemini',     vision:true,  ok:() => S.gkey, run:askGemini},
+  openrouter: {name:'OpenRouter', vision:true,  ok:() => S.okey, run:(t, i) => askOA('https://openrouter.ai/api/v1/chat/completions', S.okey, S.omodel || DEF.omodel, t, i, {'X-Title':'Kiko'})},
+  claude:     {name:'Claude',     vision:true,  ok:() => S.ckey, run:askClaude},
+};
+const cool = {};   // brain id -> time until which it's skipped after failing
+
+async function ask(text){
+  const img = S.vision && VISUAL.test(text) ? snap() : null;
+  const order = img ? ['gemini', 'openrouter', 'claude', 'groq'] : ['groq', 'gemini', 'openrouter', 'claude'];
+  const errs = [];
+  for (let pass = 0; pass < 2; pass++) {
+    for (const id of order) {
+      const b = BRAINS[id];
+      if (!b.ok() || (pass === 0 && cool[id] > Date.now())) continue;
+      if (pass === 1 && errs.some(e => e.startsWith(b.name + ':'))) continue;
+      try {
+        const out = await b.run(text, b.vision ? img : null);
+        if (!out) throw new Error('empty reply');
+        lastBrain = b.name;
+        history.push({role:'user', content:text}, {role:'assistant', content:out});
+        history = history.slice(-16);   // last 8 exchanges, text only
+        return out;
+      } catch(e) {
+        errs.push(b.name + ': ' + e.message);
+        cool[id] = Date.now() + (/rate|429|quota|limit/i.test(e.message) ? 60000 : 15000);
+      }
+    }
+  }
+  throw new Error(errs.join(' | ') || 'no brain keys set');
 }
 
 async function handle(text){
   if (S.handsFree && !WAKE.test(text)) { $('#you').textContent = ''; setState('idle'); setTimeout(listen, 200); return; }
-  if (!S.key) { openSettings(); caption('Give me an API key first (free Gemini key works). I run on brains, not vibes.'); setState('idle'); return; }
+  if (!hasBrain()) { openSettings(); caption('Give me a brain first: paste a free Groq or Gemini key. I run on brains, not vibes.'); setState('idle'); return; }
   busy = true; setState('thinking'); emotion = 'thinking'; $('#you').textContent = '“' + text + '”';
   const t0q = performance.now();
   try {
     let out = await ask(text);
-    $('#status').textContent = 'reply ' + ((performance.now() - t0q) / 1000).toFixed(1) + 's';
+    $('#status').textContent = lastBrain + ' ' + ((performance.now() - t0q) / 1000).toFixed(1) + 's';
     const m = out.match(/^\s*\[(\w+)\]/); emotion = m ? m[1].toLowerCase() : 'neutral';
     out = out.replace(/\[(\w+)\]\s*/g, '').trim();
     caption(out); await speak(out);
@@ -435,7 +485,7 @@ async function wake(){
   speechSynthesis.getVoices();
   if (S.vision) await startCam();
   setState('idle'); emotion = 'smug';
-  const hi = S.key ? `Ugh, you woke me. Fine, ${S.name}, what do you want?` : 'I have a body but no brain. Tap the gear and paste a free Gemini key.';
+  const hi = hasBrain() ? `Ugh, you woke me. Fine, ${S.name}, what do you want?` : 'I have a body but no brain. Tap the gear and paste a free Groq or Gemini key.';
   caption(hi); busy = true; await speak(hi); busy = false; setState('idle');
   if (S.handsFree) listen();
 }
@@ -458,7 +508,8 @@ function fillVoices(){ const sel = $('#sVoice'); const vs = speechSynthesis.getV
   sel.innerHTML = '<option value="">Default</option>' + vs.map(v => `<option ${v.name === S.voice ? 'selected' : ''}>${v.name}</option>`).join(''); }
 speechSynthesis.onvoiceschanged = fillVoices;
 function openSettings(){
-  $('#sProv').value = S.prov; $('#sKey').value = S.key; $('#sModel').value = S.model; $('#sName').value = S.name; $('#sLang').value = S.lang;
+  for (const [id, k] of [['#sGKey','gkey'],['#sGModel','gmodel'],['#sQKey','qkey'],['#sQModel','qmodel'],['#sOKey','okey'],['#sOModel','omodel'],['#sCKey','ckey'],['#sCModel','cmodel']]) $(id).value = S[k] || '';
+  $('#sName').value = S.name; $('#sLang').value = S.lang;
   $('#sFacing').value = S.facing; $('#sRate').value = S.rate; $('#sPitch').value = S.pitch; $('#sChatter').value = S.chatter;
   fillVoices(); $('#settings').style.display = 'block';
 }
@@ -466,9 +517,11 @@ $('#setBtn').onclick = e => { e.stopPropagation(); openSettings(); };
 $('#closeBtn').onclick = () => $('#settings').style.display = 'none';
 $('#saveBtn').onclick = async () => {
   const facingChanged = S.facing !== $('#sFacing').value;
-  Object.assign(S, {prov: $('#sProv').value, key: $('#sKey').value.trim(), model: $('#sModel').value.trim() || ($('#sProv').value === 'gemini' ? 'gemini-flash-lite-latest' : 'claude-haiku-5-5'), name: $('#sName').value.trim() || 'MJ', lang: $('#sLang').value,
+  const v = id => $(id).value.trim();
+  Object.assign(S, {gkey: v('#sGKey'), gmodel: v('#sGModel') || DEF.gmodel, qkey: v('#sQKey'), qmodel: v('#sQModel') || DEF.qmodel,
+    okey: v('#sOKey'), omodel: v('#sOModel') || DEF.omodel, ckey: v('#sCKey'), cmodel: v('#sCModel') || DEF.cmodel, name: $('#sName').value.trim() || 'MJ', lang: $('#sLang').value,
     facing: $('#sFacing').value, voice: $('#sVoice').value, rate: +$('#sRate').value || 1, pitch: +$('#sPitch').value || 1, chatter: $('#sChatter').value.trim()});
-  save(); $('#settings').style.display = 'none';
+  save(); $('#settings').style.display = 'none'; for (const k in cool) delete cool[k];
   if (facingChanged && S.vision && state !== 'asleep') startCam();
 };
 syncBtns();
